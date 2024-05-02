@@ -588,7 +588,7 @@ func runBn256Pairing(input []byte) ([]byte, error) {
 }
 
 
-
+// decryption function for bls12-381
 func decrypt(input []byte) ([]byte, error) {
 
 	privateKeyByte := input[0 : 96]
