@@ -17,16 +17,19 @@
 package vm
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	"math/big"
 
+	enc "github.com/FairBlock/DistributedIBE/encryption"
 	"github.com/consensys/gnark-crypto/ecc"
-	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
+	bls "github.com/drand/kyber-bls12381"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/tracing"
@@ -80,11 +83,13 @@ var PrecompiledContractsIstanbul = map[common.Address]PrecompiledContract{
 	common.BytesToAddress([]byte{0x7}): &bn256ScalarMulIstanbul{},
 	common.BytesToAddress([]byte{0x8}): &bn256PairingIstanbul{},
 	common.BytesToAddress([]byte{0x9}): &blake2F{},
+	common.BytesToAddress([]byte{0x94}): &decryption{},
 }
 
 // PrecompiledContractsBerlin contains the default set of pre-compiled Ethereum
 // contracts used in the Berlin release.
 var PrecompiledContractsBerlin = map[common.Address]PrecompiledContract{
+	common.BytesToAddress([]byte{1, 0}): &retConstant{},
 	common.BytesToAddress([]byte{0x1}): &ecrecover{},
 	common.BytesToAddress([]byte{0x2}): &sha256hash{},
 	common.BytesToAddress([]byte{0x3}): &ripemd160hash{},
@@ -94,6 +99,7 @@ var PrecompiledContractsBerlin = map[common.Address]PrecompiledContract{
 	common.BytesToAddress([]byte{0x7}): &bn256ScalarMulIstanbul{},
 	common.BytesToAddress([]byte{0x8}): &bn256PairingIstanbul{},
 	common.BytesToAddress([]byte{0x9}): &blake2F{},
+	common.BytesToAddress([]byte{0x94}): &decryption{},
 }
 
 // PrecompiledContractsCancun contains the default set of pre-compiled Ethereum
@@ -109,6 +115,7 @@ var PrecompiledContractsCancun = map[common.Address]PrecompiledContract{
 	common.BytesToAddress([]byte{0x8}): &bn256PairingIstanbul{},
 	common.BytesToAddress([]byte{0x9}): &blake2F{},
 	common.BytesToAddress([]byte{0xa}): &kzgPointEvaluation{},
+	common.BytesToAddress([]byte{0x94}): &decryption{},
 }
 
 // PrecompiledContractsPrague contains the set of pre-compiled Ethereum
@@ -284,6 +291,29 @@ func (c *dataCopy) RequiredGas(input []byte) uint64 {
 }
 func (c *dataCopy) Run(in []byte) ([]byte, error) {
 	return common.CopyBytes(in), nil
+}
+
+type retConstant struct{}
+
+func (c *retConstant) RequiredGas(input []byte) uint64 {
+	return uint64(1024)
+}
+
+var (
+	errConstInvalidInputLength = errors.New("invalid input length")
+)
+
+func (c *retConstant) Run(input []byte) ([]byte, error) {
+	// Only allow input up to four bytes (function signature)
+	if len(input) > 4 {
+		return nil, errConstInvalidInputLength
+	}
+
+	output := make([]byte, 6)
+	for i := 0; i < 6; i++ {
+		output[i] = byte(64 + i)
+	}
+	return output, nil
 }
 
 // bigModExp implements a native big integer exponential modular operation.
@@ -584,17 +614,55 @@ func runBn256Pairing(input []byte) ([]byte, error) {
 	return false32Byte, nil
 }
 
+// decryption function for bls12-381
+func decrypt(input []byte) ([]byte, error) {
+
+	privateKeyByte := input[0:96]
+
+	cipherBytes := input[96:]
+
+	suite := bls.NewBLS12381Suite()
+	privateKeyPoint := suite.G2().Point()
+	err := privateKeyPoint.UnmarshalBinary(privateKeyByte)
+	if err != nil {
+		return []byte{}, err
+	}
+	var destPlainText bytes.Buffer
+	var cipherBuffer bytes.Buffer
+	_, err = cipherBuffer.Write(cipherBytes)
+	if err != nil {
+		return []byte{}, err
+	}
+	err = enc.Decrypt(privateKeyPoint, privateKeyPoint, &destPlainText, &cipherBuffer)
+	if err != nil {
+		return []byte{}, err
+	}
+	return []byte(destPlainText.String()), nil
+
+	// Return the serialized result of the pairing operation
+
+}
+
 // bn256PairingIstanbul implements a pairing pre-compile for the bn256 curve
 // conforming to Istanbul consensus rules.
 type bn256PairingIstanbul struct{}
+type decryption struct{}
 
 // RequiredGas returns the gas required to execute the pre-compiled contract.
 func (c *bn256PairingIstanbul) RequiredGas(input []byte) uint64 {
 	return params.Bn256PairingBaseGasIstanbul + uint64(len(input)/192)*params.Bn256PairingPerPointGasIstanbul
 }
 
+func (c *decryption) RequiredGas(input []byte) uint64 {
+	return params.Bn256PairingBaseGasIstanbul
+}
+
 func (c *bn256PairingIstanbul) Run(input []byte) ([]byte, error) {
 	return runBn256Pairing(input)
+}
+
+func (c *decryption) Run(input []byte) ([]byte, error) {
+	return decrypt(input)
 }
 
 // bn256PairingByzantium implements a pairing pre-compile for the bn256 curve
